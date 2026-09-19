@@ -1,0 +1,250 @@
+import tkinter as tk
+import random
+
+# -------------------------
+# Settings
+# -------------------------
+
+BOARD_SIZE = 10
+TILE_SIZE = 50
+
+WIDTH = BOARD_SIZE * TILE_SIZE
+HEIGHT = BOARD_SIZE * TILE_SIZE
+
+# -------------------------
+# Game setup
+# -------------------------
+
+window = tk.Tk()
+window.title("Snake")
+
+canvas = tk.Canvas(window, width=WIDTH, height=HEIGHT)
+canvas.pack()
+
+snake = [(5, 5), (4, 5), (3, 5)]
+
+direction = "Right"
+next_direction = "Right"
+
+food = (7, 7)
+
+game_over = False
+score = 0
+
+
+# -------------------------
+# Create food
+# -------------------------
+
+def create_food():
+    global food
+
+    while True:
+        x = random.randint(0, BOARD_SIZE - 1)
+        y = random.randint(0, BOARD_SIZE - 1)
+
+        if (x, y) not in snake:
+            food = (x, y)
+            break
+
+
+# -------------------------
+# Draw the game
+# -------------------------
+
+def draw():
+    canvas.delete("all")
+
+    # Draw grid
+    for x in range(BOARD_SIZE):
+        for y in range(BOARD_SIZE):
+            canvas.create_rectangle(
+                x * TILE_SIZE,
+                y * TILE_SIZE,
+                (x + 1) * TILE_SIZE,
+                (y + 1) * TILE_SIZE,
+                outline="gray"
+            )
+
+    # Draw food
+    fx, fy = food
+
+    canvas.create_oval(
+        fx * TILE_SIZE + 5,
+        fy * TILE_SIZE + 5,
+        (fx + 1) * TILE_SIZE - 5,
+        (fy + 1) * TILE_SIZE - 5,
+        fill="red"
+    )
+
+    # Draw snake
+    for x, y in snake:
+        canvas.create_rectangle(
+            x * TILE_SIZE + 2,
+            y * TILE_SIZE + 2,
+            (x + 1) * TILE_SIZE - 2,
+            (y + 1) * TILE_SIZE - 2,
+            fill="green"
+        )
+
+    # Score
+    canvas.create_text(
+        5,
+        5,
+        text=f"Score: {score}",
+        anchor="nw",
+        fill="white",
+        font=("Arial", 12, "bold")
+    )
+
+    # Game over screen
+    if game_over:
+        canvas.create_text(
+            WIDTH // 2,
+            HEIGHT // 2,
+            text="GAME OVER\nPress R to restart",
+            fill="white",
+            font=("Arial", 20, "bold"),
+            justify="center"
+        )
+
+
+# -------------------------
+# Change direction
+# -------------------------
+
+def change_direction(new_direction):
+
+    global next_direction
+
+    # Don't allow the snake to instantly turn backwards
+
+    if new_direction == "Up" and direction != "Down":
+        next_direction = "Up"
+
+    elif new_direction == "Down" and direction != "Up":
+        next_direction = "Down"
+
+    elif new_direction == "Left" and direction != "Right":
+        next_direction = "Left"
+
+    elif new_direction == "Right" and direction != "Left":
+        next_direction = "Right"
+
+
+# -------------------------
+# Move snake
+# -------------------------
+
+def move():
+
+    global snake
+    global direction
+    global game_over
+    global score
+
+    if game_over:
+        return
+
+    direction = next_direction
+
+    # Get the current head
+    head_x, head_y = snake[0]
+
+    # Move the head
+    if direction == "Up":
+        head_y -= 1
+
+    elif direction == "Down":
+        head_y += 1
+
+    elif direction == "Left":
+        head_x -= 1
+
+    elif direction == "Right":
+        head_x += 1
+
+    new_head = (head_x, head_y)
+
+    # Hit the wall
+    if (
+        head_x < 0
+        or head_x >= BOARD_SIZE
+        or head_y < 0
+        or head_y >= BOARD_SIZE
+    ):
+        game_over = True
+        draw()
+        return
+
+    # Hit itself
+    if new_head in snake:
+        game_over = True
+        draw()
+        return
+
+    # Add new head
+    snake.insert(0, new_head)
+
+    # Eat food
+    if new_head == food:
+        score += 1
+        create_food()
+
+    else:
+        # Remove the tail
+        snake.pop()
+
+    draw()
+
+    # Move again after 150 milliseconds
+    window.after(150, move)
+
+
+# -------------------------
+# Restart
+# -------------------------
+
+def restart(event=None):
+
+    global snake
+    global direction
+    global next_direction
+    global game_over
+    global score
+
+    snake = [(5, 5), (4, 5), (3, 5)]
+
+    direction = "Right"
+    next_direction = "Right"
+
+    score = 0
+    game_over = False
+
+    create_food()
+    draw()
+
+    window.after(150, move)
+
+
+# -------------------------
+# Keyboard controls
+# -------------------------
+
+window.bind("<Up>", lambda event: change_direction("Up"))
+window.bind("<Down>", lambda event: change_direction("Down"))
+window.bind("<Left>", lambda event: change_direction("Left"))
+window.bind("<Right>", lambda event: change_direction("Right"))
+
+window.bind("r", restart)
+window.bind("R", restart)
+
+
+# -------------------------
+# Start game
+# -------------------------
+
+draw()
+window.after(150, move)
+
+window.mainloop()
