@@ -1,0 +1,592 @@
+"""
+STAR BLASTER - a space shooter made with tkinter (no installs needed).
+
+Run it:   python star_blaster.py
+
+Controls
+    Arrow keys / WASD ... move
+    SPACE ............... shoot (hold it down)
+    B or X .............. bomb (wipes out enemies and bullets)
+    P or ESC ............ pause
+    ENTER ............... start / restart
+"""
+
+import math
+import os
+import random
+import tkinter as tk
+
+W, H = 600, 720
+FRAME_MS = 16  # about 60 frames per second
+
+HIGH_SCORE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "starblaster_highscore.txt"
+)
+
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def touching(a, b):
+    """True if two circles (dicts with x, y, r) overlap."""
+    return math.hypot(a["x"] - b["x"], a["y"] - b["y"]) < a["r"] + b["r"]
+
+
+class Game:
+    def __init__(self, root):
+        self.root = root
+        root.title("Star Blaster")
+        root.resizable(False, False)
+        self.canvas = tk.Canvas(root, width=W, height=H, bg="#05050f",
+                                highlightthickness=0)
+        self.canvas.pack()
+        self.canvas.focus_set()
+
+        self.keys = set()
+        self.release_jobs = {}
+        root.bind("<KeyPress>", self.on_key_down)
+        root.bind("<KeyRelease>", self.on_key_up)
+
+        self.high_score = self.load_high_score()
+        self.stars = [[random.randint(0, W), random.randint(0, H),
+                       random.choice([1, 2, 3])] for _ in range(90)]
+        self.frame = 0
+        self.state = "menu"  # menu, playing, paused, gameover
+        self.reset()
+        self.loop()
+
+    # ---------------------------------------------------------- saving
+    def load_high_score(self):
+        try:
+            with open(HIGH_SCORE_FILE) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return 0
+
+    def save_high_score(self):
+        try:
+            with open(HIGH_SCORE_FILE, "w") as f:
+                f.write(str(self.high_score))
+        except OSError:
+            pass
+
+    # ---------------------------------------------------------- input
+    def on_key_down(self, e):
+        k = e.keysym.lower()
+        job = self.release_jobs.pop(k, None)
+        if job:
+            self.root.after_cancel(job)
+        first_press = k not in self.keys
+        self.keys.add(k)
+        if first_press:
+            self.on_press(k)
+
+    def on_key_up(self, e):
+        # Small delay so keyboard auto-repeat doesn't make movement stutter.
+        k = e.keysym.lower()
+        self.release_jobs[k] = self.root.after(40, lambda kk=k: self.release(kk))
+
+    def release(self, k):
+        self.keys.discard(k)
+        self.release_jobs.pop(k, None)
+
+    def on_press(self, k):
+        if self.state in ("menu", "gameover"):
+            if k in ("return", "space", "r"):
+                self.reset()
+                self.state = "playing"
+        elif self.state == "playing":
+            if k in ("p", "escape"):
+                self.state = "paused"
+            elif k in ("b", "x"):
+                self.use_bomb()
+        elif self.state == "paused":
+            if k in ("p", "escape"):
+                self.state = "playing"
+
+    # ---------------------------------------------------------- setup
+    def reset(self):
+        self.player = dict(x=W / 2, y=H - 90, r=12, hp=100, cd=0,
+                           invuln=0, rapid=0, triple=0, shield=0)
+        self.score = 0
+        self.wave = 0
+        self.bombs = 2
+        self.bomb_fx = 0
+        self.bullets = []
+        self.enemies = []
+        self.ebullets = []
+        self.powerups = []
+        self.particles = []
+        self.to_spawn = []
+        self.spawn_timer = 0
+        self.next_timer = None
+        self.banner = 0
+        self.banner_text = ""
+        self.start_wave()
+
+    def start_wave(self):
+        self.wave += 1
+        self.banner = 120
+        if self.wave % 5 == 0:
+            self.to_spawn = ["boss"]
+            self.banner_text = "WARNING! BOSS INCOMING"
+        else:
+            self.to_spawn = [self.pick_type() for _ in range(5 + self.wave * 2)]
+            self.banner_text = f"WAVE {self.wave}"
+        self.spawn_timer = 90
+
+    def pick_type(self):
+        kinds, weights = ["scout"], [6]
+        if self.wave >= 2:
+            kinds.append("zig")
+            weights.append(3)
+        if self.wave >= 3:
+            kinds.append("tank")
+            weights.append(1 + self.wave // 4)
+        return random.choices(kinds, weights)[0]
+
+    def spawn_enemy(self, kind):
+        w = min(self.wave, 25)
+        x = random.randint(40, W - 40)
+        if kind == "scout":
+            e = dict(kind=kind, x=x, y=-20, bx=x, ph=random.random() * 6.28,
+                     vy=2 + w * 0.08, hp=1, r=14, pts=10)
+        elif kind == "zig":
+            e = dict(kind=kind, x=x, y=-20, vx=random.choice([-3, 3]),
+                     vy=1.6, hp=2, r=15, pts=25)
+        elif kind == "tank":
+            e = dict(kind=kind, x=x, y=-30, vy=0.9, hp=6 + w // 3,
+                     r=22, pts=60)
+        else:  # boss
+            e = dict(kind="boss", x=W / 2, y=-90, vx=2.2, hp=60 + w * 8,
+                     r=52, pts=500)
+        e["maxhp"] = e["hp"]
+        e["t"] = 0
+        self.enemies.append(e)
+
+    # ---------------------------------------------------------- actions
+    def shoot(self):
+        p = self.player
+        p["cd"] = 6 if p["rapid"] > 0 else 13
+        spreads = [-2.5, 0, 2.5] if p["triple"] > 0 else [0]
+        for vx in spreads:
+            self.bullets.append(dict(x=p["x"] + vx * 3, y=p["y"] - 20,
+                                     vx=vx, vy=-11, r=3))
+
+    def fire_at_angle(self, x, y, angle, speed=4.0):
+        self.ebullets.append(dict(x=x, y=y, vx=math.cos(angle) * speed,
+                                  vy=math.sin(angle) * speed, r=5))
+
+    def fire_at_player(self, e, speed=4.2):
+        p = self.player
+        angle = math.atan2(p["y"] - e["y"], p["x"] - e["x"])
+        self.fire_at_angle(e["x"], e["y"], angle, speed)
+
+    def use_bomb(self):
+        if self.bombs <= 0:
+            return
+        self.bombs -= 1
+        self.bomb_fx = 35
+        self.ebullets.clear()
+        for e in self.enemies:
+            e["hp"] -= 12 if e["kind"] == "boss" else 999
+
+    def hurt_player(self, dmg):
+        p = self.player
+        if p["shield"] > 0 or p["invuln"] > 0:
+            return
+        p["hp"] -= dmg
+        p["invuln"] = 60
+        self.explode(p["x"], p["y"], "#ffaa33", 14)
+        if p["hp"] <= 0:
+            p["hp"] = 0
+            self.explode(p["x"], p["y"], "#ffffff", 50)
+            self.state = "gameover"
+            if self.score > self.high_score:
+                self.high_score = self.score
+                self.save_high_score()
+
+    def explode(self, x, y, color, n=20):
+        for _ in range(n):
+            a = random.random() * 6.283
+            s = random.uniform(1, 5)
+            self.particles.append(dict(x=x, y=y, vx=math.cos(a) * s,
+                                       vy=math.sin(a) * s,
+                                       life=random.randint(18, 40),
+                                       color=color))
+
+    def kill_enemy(self, e):
+        self.score += e["pts"]
+        big = e["kind"] in ("tank", "boss")
+        colors = {"scout": "#ff5577", "zig": "#ffaa33",
+                  "tank": "#aab4c8", "boss": "#c77dff"}
+        self.explode(e["x"], e["y"], colors[e["kind"]], 60 if big else 18)
+        if e["kind"] == "boss":
+            self.bombs += 1
+            self.player["hp"] = min(100, self.player["hp"] + 25)
+            self.ebullets.clear()
+            self.drop_powerup(e["x"] - 30, e["y"])
+            self.drop_powerup(e["x"] + 30, e["y"])
+        else:
+            chance = 0.4 if e["kind"] == "tank" else 0.12
+            if random.random() < chance:
+                self.drop_powerup(e["x"], e["y"])
+
+    def drop_powerup(self, x, y):
+        kind = random.choice(["R", "T", "S", "+"])
+        self.powerups.append(dict(x=x, y=y, r=13, kind=kind))
+
+    def collect(self, pu):
+        p = self.player
+        if pu["kind"] == "R":
+            p["rapid"] = 600
+        elif pu["kind"] == "T":
+            p["triple"] = 600
+        elif pu["kind"] == "S":
+            p["shield"] = 420
+        else:
+            p["hp"] = min(100, p["hp"] + 30)
+        self.score += 5
+
+    # ---------------------------------------------------------- update
+    def update(self):
+        self.frame += 1
+        p = self.player
+        k = self.keys
+
+        # Movement
+        dx = (("right" in k) or ("d" in k)) - (("left" in k) or ("a" in k))
+        dy = (("down" in k) or ("s" in k)) - (("up" in k) or ("w" in k))
+        p["x"] = clamp(p["x"] + dx * 6, 20, W - 20)
+        p["y"] = clamp(p["y"] + dy * 6, 40, H - 30)
+
+        # Shooting and timers
+        if p["cd"] > 0:
+            p["cd"] -= 1
+        if "space" in k and p["cd"] <= 0:
+            self.shoot()
+        for key in ("invuln", "rapid", "triple", "shield"):
+            if p[key] > 0:
+                p[key] -= 1
+        if self.bomb_fx > 0:
+            self.bomb_fx -= 1
+        if self.banner > 0:
+            self.banner -= 1
+
+        # Spawning and waves
+        if self.to_spawn:
+            self.spawn_timer -= 1
+            if self.spawn_timer <= 0:
+                self.spawn_enemy(self.to_spawn.pop(0))
+                self.spawn_timer = max(18, 55 - self.wave * 2) + random.randint(0, 15)
+        elif not self.enemies:
+            if self.next_timer is None:
+                self.next_timer = 90
+            self.next_timer -= 1
+            if self.next_timer <= 0:
+                self.next_timer = None
+                self.start_wave()
+
+        self.update_enemies()
+
+        # Player bullets
+        for b in self.bullets:
+            b["x"] += b["vx"]
+            b["y"] += b["vy"]
+        self.bullets = [b for b in self.bullets if -10 < b["y"] < H + 10
+                        and -10 < b["x"] < W + 10]
+
+        # Player bullets hitting enemies
+        for b in self.bullets:
+            for e in self.enemies:
+                if e["hp"] > 0 and touching(b, e):
+                    e["hp"] -= 1
+                    b["y"] = -999  # remove it
+                    self.explode(b["x"], b["y"] if b["y"] > 0 else e["y"],
+                                 "#ffee88", 3)
+                    break
+
+        # Enemy bullets
+        for b in self.ebullets:
+            b["x"] += b["vx"]
+            b["y"] += b["vy"]
+            if touching(b, p):
+                b["y"] = H + 999
+                self.hurt_player(12)
+        self.ebullets = [b for b in self.ebullets if -20 < b["y"] < H + 20
+                         and -20 < b["x"] < W + 20]
+
+        # Enemies touching the player
+        for e in self.enemies:
+            if e["hp"] > 0 and touching(e, p):
+                if e["kind"] != "boss":
+                    e["hp"] = 0
+                self.hurt_player(30 if e["kind"] == "boss" else 20)
+
+        # Power-ups
+        for pu in self.powerups:
+            pu["y"] += 2
+            if touching(pu, p):
+                self.collect(pu)
+                pu["y"] = H + 999
+        self.powerups = [pu for pu in self.powerups if pu["y"] < H + 30]
+
+        # Deaths
+        alive = []
+        for e in self.enemies:
+            if e["hp"] <= 0:
+                self.kill_enemy(e)
+            else:
+                alive.append(e)
+        self.enemies = alive
+
+        # Particles
+        for pt in self.particles:
+            pt["x"] += pt["vx"]
+            pt["y"] += pt["vy"]
+            pt["life"] -= 1
+        self.particles = [pt for pt in self.particles if pt["life"] > 0]
+
+        if self.score > self.high_score:
+            self.high_score = self.score
+
+    def update_enemies(self):
+        for e in self.enemies:
+            e["t"] += 1
+            kind = e["kind"]
+            if kind == "scout":
+                e["y"] += e["vy"]
+                e["x"] = e["bx"] + math.sin(e["t"] * 0.05 + e["ph"]) * 60
+                e["x"] = clamp(e["x"], 15, W - 15)
+            elif kind == "zig":
+                e["x"] += e["vx"]
+                e["y"] += e["vy"]
+                if e["x"] < 20 or e["x"] > W - 20:
+                    e["vx"] *= -1
+                if e["t"] % 100 == 0:
+                    self.fire_at_angle(e["x"], e["y"], math.pi / 2, 4.5)
+            elif kind == "tank":
+                e["y"] += e["vy"]
+                if e["t"] % 80 == 0 and e["y"] > 0:
+                    self.fire_at_player(e)
+            else:  # boss
+                if e["y"] < 110:
+                    e["y"] += 1.5
+                else:
+                    e["x"] += e["vx"]
+                    if e["x"] < 90 or e["x"] > W - 90:
+                        e["vx"] *= -1
+                    if e["t"] % 45 == 0:
+                        for i in range(5):
+                            ang = math.radians(50 + i * 20)
+                            self.fire_at_angle(e["x"], e["y"] + 30, ang, 4)
+                    if e["t"] % 150 == 0:
+                        for i in range(14):
+                            self.fire_at_angle(e["x"], e["y"],
+                                               i * (6.283 / 14), 3)
+                    if e["t"] % 90 == 0:
+                        self.fire_at_player(e, 5)
+        self.enemies = [e for e in self.enemies if e["y"] < H + 40]
+
+    # ---------------------------------------------------------- drawing
+    def draw(self):
+        c = self.canvas
+        c.delete("all")
+
+        # Stars
+        for s in self.stars:
+            if self.state == "playing":
+                s[1] += s[2] * 0.6
+                if s[1] > H:
+                    s[1] = 0
+                    s[0] = random.randint(0, W)
+            shade = {1: "#444466", 2: "#7777aa", 3: "#ccccff"}[s[2]]
+            c.create_rectangle(s[0], s[1], s[0] + s[2], s[1] + s[2],
+                               fill=shade, outline="")
+
+        if self.state != "menu":
+            self.draw_world()
+        self.draw_hud()
+        self.draw_overlay()
+
+    def draw_world(self):
+        c = self.canvas
+        p = self.player
+
+        # Power-ups
+        colors = {"R": "#ffee33", "T": "#33eeff", "S": "#4488ff", "+": "#44ee66"}
+        for pu in self.powerups:
+            col = colors[pu["kind"]]
+            c.create_oval(pu["x"] - 13, pu["y"] - 13, pu["x"] + 13,
+                          pu["y"] + 13, outline=col, width=2, fill="#111122")
+            c.create_text(pu["x"], pu["y"], text=pu["kind"], fill=col,
+                          font=("Helvetica", 12, "bold"))
+
+        # Enemies
+        for e in self.enemies:
+            self.draw_enemy(e)
+
+        # Bullets
+        for b in self.bullets:
+            c.create_rectangle(b["x"] - 2, b["y"] - 8, b["x"] + 2, b["y"] + 4,
+                               fill="#ffee88", outline="")
+        for b in self.ebullets:
+            c.create_oval(b["x"] - 5, b["y"] - 5, b["x"] + 5, b["y"] + 5,
+                          fill="#ff3355", outline="#ffaaaa")
+
+        # Player (blinks while invulnerable)
+        if self.state != "gameover" and (p["invuln"] == 0 or p["invuln"] % 8 < 4):
+            x, y = p["x"], p["y"]
+            if self.frame % 4 < 2:
+                c.create_polygon(x - 6, y + 10, x + 6, y + 10, x, y + 26,
+                                 fill="#ff9933", outline="")
+            c.create_polygon(x, y - 22, x + 16, y + 16, x, y + 8, x - 16,
+                             y + 16, fill="#55ddff", outline="#ffffff", width=2)
+            if p["shield"] > 0 and (p["shield"] > 90 or p["shield"] % 10 < 5):
+                c.create_oval(x - 26, y - 26, x + 26, y + 26,
+                              outline="#4488ff", width=3)
+
+        # Particles
+        for pt in self.particles:
+            s = max(1, pt["life"] // 10)
+            c.create_rectangle(pt["x"], pt["y"], pt["x"] + s, pt["y"] + s,
+                               fill=pt["color"], outline="")
+
+        # Bomb shockwave
+        if self.bomb_fx > 0:
+            rad = (35 - self.bomb_fx) * 22
+            c.create_oval(p["x"] - rad, p["y"] - rad, p["x"] + rad,
+                          p["y"] + rad, outline="#ffffff", width=4)
+
+    def draw_enemy(self, e):
+        c = self.canvas
+        x, y, r = e["x"], e["y"], e["r"]
+        kind = e["kind"]
+        if kind == "scout":
+            c.create_polygon(x - r, y - r, x + r, y - r, x, y + r,
+                             fill="#ff5577", outline="#ffccdd", width=2)
+        elif kind == "zig":
+            c.create_polygon(x, y - r, x + r, y, x, y + r, x - r, y,
+                             fill="#ffaa33", outline="#ffe0aa", width=2)
+        elif kind == "tank":
+            c.create_polygon(x - r, y - r / 2, x - r / 2, y - r, x + r / 2,
+                             y - r, x + r, y - r / 2, x + r, y + r / 2,
+                             x + r / 2, y + r, x - r / 2, y + r, x - r,
+                             y + r / 2, fill="#667088", outline="#dde4f5",
+                             width=2)
+            c.create_oval(x - 6, y - 6, x + 6, y + 6, fill="#ff3355",
+                          outline="")
+        else:
+            c.create_polygon(x - r, y - 10, x - r / 2, y - r, x + r / 2,
+                             y - r, x + r, y - 10, x + r * 0.6, y + r * 0.7,
+                             x, y + r, x - r * 0.6, y + r * 0.7,
+                             fill="#8a3fd1", outline="#e0b0ff", width=3)
+            c.create_oval(x - 12, y - 12, x + 12, y + 12, fill="#ff3355",
+                          outline="#ffffff", width=2)
+        if e["hp"] < e["maxhp"]:
+            frac = max(0, e["hp"] / e["maxhp"])
+            bw = r * 2
+            c.create_rectangle(x - r, y - r - 12, x + r, y - r - 7,
+                               outline="#888888")
+            c.create_rectangle(x - r, y - r - 12, x - r + bw * frac,
+                               y - r - 7, fill="#ff4466", outline="")
+
+    def draw_hud(self):
+        c = self.canvas
+        p = self.player
+        f = ("Helvetica", 14, "bold")
+        c.create_text(15, 15, anchor="nw", text=f"SCORE {self.score}",
+                      fill="#ffffff", font=f)
+        c.create_text(W - 15, 15, anchor="ne", text=f"BEST {self.high_score}",
+                      fill="#ffdd55", font=f)
+        if self.state == "menu":
+            return
+        c.create_text(W / 2, 15, anchor="n", text=f"WAVE {self.wave}",
+                      fill="#88ccff", font=f)
+
+        # Health bar
+        c.create_rectangle(15, H - 30, 215, H - 14, outline="#aaaaaa")
+        col = "#44ee66" if p["hp"] > 50 else "#ffaa33" if p["hp"] > 25 else "#ff3355"
+        c.create_rectangle(15, H - 30, 15 + 2 * p["hp"], H - 14, fill=col,
+                           outline="")
+        c.create_text(15, H - 34, anchor="sw", text="HULL", fill="#aaaaaa",
+                      font=("Helvetica", 9, "bold"))
+
+        # Bombs
+        c.create_text(W - 15, H - 14, anchor="se",
+                      text="BOMBS " + "* " * self.bombs, fill="#ffffff",
+                      font=f)
+
+        # Active power-ups
+        y = 50
+        for label, key, col in (("RAPID", "rapid", "#ffee33"),
+                                ("TRIPLE", "triple", "#33eeff"),
+                                ("SHIELD", "shield", "#4488ff")):
+            if p[key] > 0:
+                c.create_text(15, y, anchor="nw", text=label, fill=col,
+                              font=("Helvetica", 10, "bold"))
+                c.create_rectangle(80, y + 3, 80 + p[key] / 6, y + 11,
+                                   fill=col, outline="")
+                y += 18
+
+    def draw_overlay(self):
+        c = self.canvas
+        big = ("Helvetica", 44, "bold")
+        mid = ("Helvetica", 16, "bold")
+        small = ("Helvetica", 12)
+
+        if self.state == "menu":
+            c.create_text(W / 2, 200, text="STAR BLASTER", fill="#55ddff",
+                          font=big)
+            c.create_text(W / 2, 270, text="Survive the waves. Beat the bosses.",
+                          fill="#ffffff", font=mid)
+            lines = ["Arrows / WASD  -  move", "SPACE  -  shoot (hold it)",
+                     "B or X  -  bomb", "P or ESC  -  pause",
+                     "Grab power-ups:  R rapid   T triple   S shield   + heal"]
+            for i, t in enumerate(lines):
+                c.create_text(W / 2, 350 + i * 28, text=t, fill="#bbbbdd",
+                              font=small)
+            if (self.frame // 30) % 2 == 0:
+                c.create_text(W / 2, 560, text="Press ENTER to start",
+                              fill="#ffee55", font=mid)
+
+        elif self.state == "playing" and self.banner > 0:
+            c.create_text(W / 2, 260, text=self.banner_text,
+                          fill="#ffee55" if "BOSS" not in self.banner_text
+                          else "#ff4466", font=("Helvetica", 30, "bold"))
+
+        elif self.state == "paused":
+            c.create_text(W / 2, H / 2, text="PAUSED", fill="#ffffff",
+                          font=big)
+            c.create_text(W / 2, H / 2 + 50, text="Press P to resume",
+                          fill="#bbbbdd", font=mid)
+
+        elif self.state == "gameover":
+            c.create_text(W / 2, 250, text="GAME OVER", fill="#ff4466",
+                          font=big)
+            c.create_text(W / 2, 320, text=f"Score: {self.score}",
+                          fill="#ffffff", font=mid)
+            c.create_text(W / 2, 350, text=f"Reached wave {self.wave}",
+                          fill="#88ccff", font=mid)
+            if self.score >= self.high_score and self.score > 0:
+                c.create_text(W / 2, 385, text="NEW HIGH SCORE!",
+                              fill="#ffdd55", font=mid)
+            if (self.frame // 30) % 2 == 0:
+                c.create_text(W / 2, 450, text="Press ENTER to play again",
+                              fill="#ffee55", font=mid)
+
+    # ---------------------------------------------------------- main loop
+    def loop(self):
+        if self.state == "playing":
+            self.update()
+        else:
+            self.frame += 1
+        self.draw()
+        self.root.after(FRAME_MS, self.loop)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    Game(root)
+    root.mainloop()
