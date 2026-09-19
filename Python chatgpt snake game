@@ -1,9 +1,10 @@
 import tkinter as tk
 import random
 
-# -------------------------
-# Settings
-# -------------------------
+
+# =========================================================
+# SETTINGS
+# =========================================================
 
 BOARD_SIZE = 10
 TILE_SIZE = 50
@@ -11,130 +12,581 @@ TILE_SIZE = 50
 WIDTH = BOARD_SIZE * TILE_SIZE
 HEIGHT = BOARD_SIZE * TILE_SIZE
 
-# -------------------------
-# Game setup
-# -------------------------
+START_SPEED = 150
+MIN_SPEED = 65
+
+
+# =========================================================
+# COLORS
+# =========================================================
+
+BACKGROUND = "#111827"
+BOARD_COLOR = "#1F2937"
+GRID_COLOR = "#374151"
+
+SNAKE_COLOR = "#22C55E"
+SNAKE_HEAD_COLOR = "#4ADE80"
+
+FOOD_COLOR = "#EF4444"
+FOOD_DARK = "#B91C1C"
+
+TEXT_COLOR = "#F9FAFB"
+SECONDARY_TEXT = "#9CA3AF"
+
+
+# =========================================================
+# WINDOW
+# =========================================================
 
 window = tk.Tk()
+
 window.title("Snake")
+window.resizable(False, False)
+window.configure(bg=BACKGROUND)
 
-canvas = tk.Canvas(window, width=WIDTH, height=HEIGHT)
-canvas.pack()
 
-snake = [(5, 5), (4, 5), (3, 5)]
+# =========================================================
+# HEADER
+# =========================================================
+
+header = tk.Frame(
+    window,
+    bg=BACKGROUND
+)
+
+header.pack(
+    fill="x",
+    padx=20,
+    pady=(15, 10)
+)
+
+
+score_label = tk.Label(
+    header,
+    text="SCORE  0",
+    bg=BACKGROUND,
+    fg=TEXT_COLOR,
+    font=("Arial", 16, "bold")
+)
+
+score_label.pack(side="left")
+
+
+high_score_label = tk.Label(
+    header,
+    text="HIGH SCORE  0",
+    bg=BACKGROUND,
+    fg=SECONDARY_TEXT,
+    font=("Arial", 12, "bold")
+)
+
+high_score_label.pack(side="right")
+
+
+# =========================================================
+# GAME BOARD
+# =========================================================
+
+canvas = tk.Canvas(
+    window,
+    width=WIDTH,
+    height=HEIGHT,
+    bg=BOARD_COLOR,
+    highlightthickness=0
+)
+
+canvas.pack(
+    padx=20,
+    pady=5
+)
+
+
+# =========================================================
+# CONTROLS
+# =========================================================
+
+controls = tk.Label(
+    window,
+    text="↑ ↓ ← →  Move     P  Pause     R  Restart",
+    bg=BACKGROUND,
+    fg=SECONDARY_TEXT,
+    font=("Arial", 10)
+)
+
+controls.pack(
+    pady=(8, 15)
+)
+
+
+# =========================================================
+# GAME VARIABLES
+# =========================================================
+
+snake = [
+    (5, 5),
+    (4, 5),
+    (3, 5)
+]
 
 direction = "Right"
 next_direction = "Right"
 
 food = (7, 7)
 
-game_over = False
 score = 0
+high_score = 0
+
+game_over = False
+paused = False
+started = False
+
+speed = START_SPEED
+
+# Stores the timer so we can cancel it when restarting
+move_job = None
 
 
-# -------------------------
-# Create food
-# -------------------------
+# =========================================================
+# CREATE FOOD
+# =========================================================
 
 def create_food():
+
     global food
 
-    while True:
-        x = random.randint(0, BOARD_SIZE - 1)
-        y = random.randint(0, BOARD_SIZE - 1)
+    # Find every empty tile on the board
+    empty_tiles = []
 
-        if (x, y) not in snake:
-            food = (x, y)
-            break
-
-
-# -------------------------
-# Draw the game
-# -------------------------
-
-def draw():
-    canvas.delete("all")
-
-    # Draw grid
     for x in range(BOARD_SIZE):
+
         for y in range(BOARD_SIZE):
+
+            if (x, y) not in snake:
+                empty_tiles.append((x, y))
+
+    # If there are empty tiles, choose one randomly
+    if empty_tiles:
+        food = random.choice(empty_tiles)
+
+    else:
+        # The snake filled the entire board
+        food = None
+
+
+# =========================================================
+# DRAW GRID
+# =========================================================
+
+def draw_grid():
+
+    for x in range(BOARD_SIZE):
+
+        for y in range(BOARD_SIZE):
+
             canvas.create_rectangle(
                 x * TILE_SIZE,
                 y * TILE_SIZE,
+
                 (x + 1) * TILE_SIZE,
                 (y + 1) * TILE_SIZE,
-                outline="gray"
+
+                fill=BOARD_COLOR,
+                outline=GRID_COLOR
             )
 
-    # Draw food
+
+# =========================================================
+# DRAW FOOD
+# =========================================================
+
+def draw_food():
+
+    # No food if the board is completely full
+    if food is None:
+        return
+
     fx, fy = food
 
+    left = fx * TILE_SIZE + 8
+    top = fy * TILE_SIZE + 8
+
+    right = (fx + 1) * TILE_SIZE - 8
+    bottom = (fy + 1) * TILE_SIZE - 8
+
+    # Apple
     canvas.create_oval(
-        fx * TILE_SIZE + 5,
-        fy * TILE_SIZE + 5,
-        (fx + 1) * TILE_SIZE - 5,
-        (fy + 1) * TILE_SIZE - 5,
-        fill="red"
+        left,
+        top + 3,
+        right,
+        bottom,
+
+        fill=FOOD_COLOR,
+        outline=FOOD_DARK,
+        width=2
     )
 
-    # Draw snake
-    for x, y in snake:
+    # Stem
+    canvas.create_line(
+        fx * TILE_SIZE + 25,
+        top + 3,
+
+        fx * TILE_SIZE + 28,
+        top - 3,
+
+        fill="#78350F",
+        width=3
+    )
+
+    # Leaf
+    canvas.create_oval(
+        fx * TILE_SIZE + 27,
+        top - 3,
+
+        fx * TILE_SIZE + 37,
+        top + 3,
+
+        fill="#22C55E",
+        outline=""
+    )
+
+
+# =========================================================
+# DRAW SNAKE
+# =========================================================
+
+def draw_snake():
+
+    for index, (x, y) in enumerate(snake):
+
+        left = x * TILE_SIZE + 3
+        top = y * TILE_SIZE + 3
+
+        right = (x + 1) * TILE_SIZE - 3
+        bottom = (y + 1) * TILE_SIZE - 3
+
+
+        # -------------------------------------------------
+        # HEAD
+        # -------------------------------------------------
+
+        if index == 0:
+
+            canvas.create_rectangle(
+                left,
+                top,
+                right,
+                bottom,
+
+                fill=SNAKE_HEAD_COLOR,
+                outline=""
+            )
+
+            # Decide where the eyes go
+            if direction == "Up":
+
+                eyes = [
+                    (left + 12, top + 10),
+                    (right - 12, top + 10)
+                ]
+
+            elif direction == "Down":
+
+                eyes = [
+                    (left + 12, bottom - 10),
+                    (right - 12, bottom - 10)
+                ]
+
+            elif direction == "Left":
+
+                eyes = [
+                    (left + 10, top + 12),
+                    (left + 10, bottom - 12)
+                ]
+
+            else:
+
+                eyes = [
+                    (right - 10, top + 12),
+                    (right - 10, bottom - 12)
+                ]
+
+
+            # Draw eyes
+            for eye_x, eye_y in eyes:
+
+                canvas.create_oval(
+                    eye_x - 3,
+                    eye_y - 3,
+
+                    eye_x + 3,
+                    eye_y + 3,
+
+                    fill="#111827"
+                )
+
+
+        # -------------------------------------------------
+        # BODY
+        # -------------------------------------------------
+
+        else:
+
+            canvas.create_rectangle(
+                left,
+                top,
+                right,
+                bottom,
+
+                fill=SNAKE_COLOR,
+                outline=""
+            )
+
+
+# =========================================================
+# DRAW EVERYTHING
+# =========================================================
+
+def draw():
+
+    canvas.delete("all")
+
+    draw_grid()
+    draw_food()
+    draw_snake()
+
+
+    # Update score
+    score_label.config(
+        text=f"SCORE  {score}"
+    )
+
+
+    # Update high score
+    high_score_label.config(
+        text=f"HIGH SCORE  {high_score}"
+    )
+
+
+    # -----------------------------------------------------
+    # START SCREEN
+    # -----------------------------------------------------
+
+    if not started and not game_over:
+
         canvas.create_rectangle(
-            x * TILE_SIZE + 2,
-            y * TILE_SIZE + 2,
-            (x + 1) * TILE_SIZE - 2,
-            (y + 1) * TILE_SIZE - 2,
-            fill="green"
+            45,
+            145,
+
+            WIDTH - 45,
+            HEIGHT - 145,
+
+            fill=BACKGROUND,
+            outline=GRID_COLOR,
+            width=2
         )
 
-    # Score
-    canvas.create_text(
-        5,
-        5,
-        text=f"Score: {score}",
-        anchor="nw",
-        fill="white",
-        font=("Arial", 12, "bold")
-    )
-
-    # Game over screen
-    if game_over:
         canvas.create_text(
             WIDTH // 2,
-            HEIGHT // 2,
-            text="GAME OVER\nPress R to restart",
-            fill="white",
-            font=("Arial", 20, "bold"),
-            justify="center"
+            200,
+
+            text="SNAKE",
+
+            fill=SNAKE_HEAD_COLOR,
+            font=("Arial", 32, "bold")
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            245,
+
+            text="Press an arrow key to start",
+
+            fill=TEXT_COLOR,
+            font=("Arial", 13)
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            275,
+
+            text="Eat apples • Grow longer • Don't crash",
+
+            fill=SECONDARY_TEXT,
+            font=("Arial", 10)
         )
 
 
-# -------------------------
-# Change direction
-# -------------------------
+    # -----------------------------------------------------
+    # PAUSE SCREEN
+    # -----------------------------------------------------
+
+    if paused and not game_over:
+
+        canvas.create_rectangle(
+            60,
+            180,
+
+            WIDTH - 60,
+            HEIGHT - 180,
+
+            fill=BACKGROUND,
+            outline=GRID_COLOR,
+            width=2
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            HEIGHT // 2 - 20,
+
+            text="PAUSED",
+
+            fill=TEXT_COLOR,
+            font=("Arial", 28, "bold")
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            HEIGHT // 2 + 25,
+
+            text="Press P to continue",
+
+            fill=SECONDARY_TEXT,
+            font=("Arial", 11)
+        )
+
+
+    # -----------------------------------------------------
+    # GAME OVER SCREEN
+    # -----------------------------------------------------
+
+    if game_over:
+
+        canvas.create_rectangle(
+            45,
+            145,
+
+            WIDTH - 45,
+            HEIGHT - 145,
+
+            fill=BACKGROUND,
+            outline=GRID_COLOR,
+            width=2
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            195,
+
+            text="GAME OVER",
+
+            fill=FOOD_COLOR,
+            font=("Arial", 27, "bold")
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            235,
+
+            text=f"Score: {score}",
+
+            fill=TEXT_COLOR,
+            font=("Arial", 14, "bold")
+        )
+
+        canvas.create_text(
+            WIDTH // 2,
+            270,
+
+            text="Press R to play again",
+
+            fill=SECONDARY_TEXT,
+            font=("Arial", 11)
+        )
+
+
+# =========================================================
+# SCHEDULE NEXT MOVE
+# =========================================================
+
+def schedule_move():
+
+    global move_job
+
+    # Cancel an old timer if one exists
+    if move_job is not None:
+
+        try:
+            window.after_cancel(move_job)
+
+        except tk.TclError:
+            pass
+
+
+    # Create a new timer
+    move_job = window.after(
+        speed,
+        move
+    )
+
+
+# =========================================================
+# CHANGE DIRECTION
+# =========================================================
 
 def change_direction(new_direction):
 
     global next_direction
-
-    # Don't allow the snake to instantly turn backwards
-
-    if new_direction == "Up" and direction != "Down":
-        next_direction = "Up"
-
-    elif new_direction == "Down" and direction != "Up":
-        next_direction = "Down"
-
-    elif new_direction == "Left" and direction != "Right":
-        next_direction = "Left"
-
-    elif new_direction == "Right" and direction != "Left":
-        next_direction = "Right"
+    global started
 
 
-# -------------------------
-# Move snake
-# -------------------------
+    if game_over:
+        return
+
+
+    # -----------------------------------------------------
+    # Don't allow instant reverse
+    # -----------------------------------------------------
+
+    if new_direction == "Up":
+
+        if direction != "Down":
+            next_direction = "Up"
+
+
+    elif new_direction == "Down":
+
+        if direction != "Up":
+            next_direction = "Down"
+
+
+    elif new_direction == "Left":
+
+        if direction != "Right":
+            next_direction = "Left"
+
+
+    elif new_direction == "Right":
+
+        if direction != "Left":
+            next_direction = "Right"
+
+
+    # -----------------------------------------------------
+    # START GAME
+    # -----------------------------------------------------
+
+    if not started:
+
+        started = True
+
+        # IMPORTANT:
+        # Actually start moving the snake
+        move()
+
+
+# =========================================================
+# MOVE SNAKE
+# =========================================================
 
 def move():
 
@@ -142,16 +594,37 @@ def move():
     global direction
     global game_over
     global score
+    global high_score
+    global speed
+    global move_job
 
+
+    # This timer has now finished
+    move_job = None
+
+
+    # Don't move if game isn't running
     if game_over:
         return
 
+    if paused:
+        return
+
+    if not started:
+        return
+
+
+    # Use the new direction
     direction = next_direction
 
-    # Get the current head
+
+    # -----------------------------------------------------
+    # FIND NEW HEAD POSITION
+    # -----------------------------------------------------
+
     head_x, head_y = snake[0]
 
-    # Move the head
+
     if direction == "Up":
         head_y -= 1
 
@@ -164,46 +637,159 @@ def move():
     elif direction == "Right":
         head_x += 1
 
+
     new_head = (head_x, head_y)
 
-    # Hit the wall
+
+    # -----------------------------------------------------
+    # WALL COLLISION
+    # -----------------------------------------------------
+
     if (
         head_x < 0
         or head_x >= BOARD_SIZE
         or head_y < 0
         or head_y >= BOARD_SIZE
     ):
+
         game_over = True
+
         draw()
+
         return
 
-    # Hit itself
-    if new_head in snake:
-        game_over = True
-        draw()
-        return
 
-    # Add new head
-    snake.insert(0, new_head)
+    # -----------------------------------------------------
+    # CHECK IF WE ARE EATING FOOD
+    # -----------------------------------------------------
 
-    # Eat food
-    if new_head == food:
-        score += 1
-        create_food()
+    eating = (
+        food is not None
+        and new_head == food
+    )
+
+
+    # -----------------------------------------------------
+    # SELF COLLISION
+    # -----------------------------------------------------
+
+    # If we are NOT eating, the tail will disappear
+    # during this move.
+    #
+    # Therefore, moving into the old tail is allowed.
+
+    if eating:
+
+        body_to_check = snake
 
     else:
-        # Remove the tail
+
+        body_to_check = snake[:-1]
+
+
+    if new_head in body_to_check:
+
+        game_over = True
+
+        draw()
+
+        return
+
+
+    # -----------------------------------------------------
+    # ADD NEW HEAD
+    # -----------------------------------------------------
+
+    snake.insert(
+        0,
+        new_head
+    )
+
+
+    # -----------------------------------------------------
+    # EAT FOOD
+    # -----------------------------------------------------
+
+    if eating:
+
+        score += 1
+
+
+        # Update high score
+        if score > high_score:
+
+            high_score = score
+
+
+        # Make the game faster
+        speed = max(
+            MIN_SPEED,
+            START_SPEED - score * 5
+        )
+
+
+        # Create new food
+        create_food()
+
+
+        # Snake filled the whole board
+        if food is None:
+
+            game_over = True
+
+            draw()
+
+            return
+
+
+    # -----------------------------------------------------
+    # DIDN'T EAT
+    # -----------------------------------------------------
+
+    else:
+
+        # Remove the last piece of the snake
         snake.pop()
+
+
+    # Draw new position
+    draw()
+
+
+    # Schedule next movement
+    schedule_move()
+
+
+# =========================================================
+# PAUSE / UNPAUSE
+# =========================================================
+
+def toggle_pause(event=None):
+
+    global paused
+
+
+    if game_over:
+        return
+
+    if not started:
+        return
+
+
+    paused = not paused
 
     draw()
 
-    # Move again after 150 milliseconds
-    window.after(150, move)
+
+    # If we unpaused, start moving again
+    if not paused:
+
+        schedule_move()
 
 
-# -------------------------
-# Restart
-# -------------------------
+# =========================================================
+# RESTART
+# =========================================================
 
 def restart(event=None):
 
@@ -211,40 +797,116 @@ def restart(event=None):
     global direction
     global next_direction
     global game_over
+    global paused
     global score
+    global speed
+    global started
+    global move_job
 
-    snake = [(5, 5), (4, 5), (3, 5)]
 
+    # -----------------------------------------------------
+    # Cancel old movement timer
+    # -----------------------------------------------------
+
+    if move_job is not None:
+
+        try:
+            window.after_cancel(move_job)
+
+        except tk.TclError:
+            pass
+
+        move_job = None
+
+
+    # -----------------------------------------------------
+    # Reset snake
+    # -----------------------------------------------------
+
+    snake = [
+        (5, 5),
+        (4, 5),
+        (3, 5)
+    ]
+
+
+    # Reset direction
     direction = "Right"
     next_direction = "Right"
 
-    score = 0
-    game_over = False
 
+    # Reset game
+    score = 0
+    speed = START_SPEED
+
+    game_over = False
+    paused = False
+    started = False
+
+
+    # Create new food
     create_food()
+
+
+    # Draw start screen
     draw()
 
-    window.after(150, move)
+
+# =========================================================
+# KEYBOARD CONTROLS
+# =========================================================
+
+window.bind(
+    "<Up>",
+    lambda event: change_direction("Up")
+)
+
+window.bind(
+    "<Down>",
+    lambda event: change_direction("Down")
+)
+
+window.bind(
+    "<Left>",
+    lambda event: change_direction("Left")
+)
+
+window.bind(
+    "<Right>",
+    lambda event: change_direction("Right")
+)
 
 
-# -------------------------
-# Keyboard controls
-# -------------------------
+# Pause
+window.bind(
+    "p",
+    toggle_pause
+)
 
-window.bind("<Up>", lambda event: change_direction("Up"))
-window.bind("<Down>", lambda event: change_direction("Down"))
-window.bind("<Left>", lambda event: change_direction("Left"))
-window.bind("<Right>", lambda event: change_direction("Right"))
-
-window.bind("r", restart)
-window.bind("R", restart)
+window.bind(
+    "P",
+    toggle_pause
+)
 
 
-# -------------------------
-# Start game
-# -------------------------
+# Restart
+window.bind(
+    "r",
+    restart
+)
+
+window.bind(
+    "R",
+    restart
+)
+
+
+# =========================================================
+# START PROGRAM
+# =========================================================
+
+create_food()
 
 draw()
-window.after(150, move)
 
 window.mainloop()
